@@ -44,7 +44,7 @@ class BaseWebAnnoTSVWriter(ABC):
                     abs_end = token.end + offset
                     line = f"{token.sentence_index}-{token.token_index}\t{abs_start}-{abs_end}\t{token.text}\t" + "\t".join(layers) + "\t"
                     f.write(line + "\n")
-                offset += len(sentence.text)
+                offset += len(sentence.text) + 1
 
     @abstractmethod
     def _build_layer_header(self) -> str:
