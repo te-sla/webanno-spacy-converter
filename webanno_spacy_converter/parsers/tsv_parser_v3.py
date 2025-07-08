@@ -22,7 +22,8 @@ class BaseWebAnnoTSVParser(ABC):
         lines = self.load_lines()
         self._extract_headers(lines)
         sentence_blocks = self._split_sentences(lines)
-        self.sentences = [self._parse_sentence_lines(block, i + 1) for i, block in enumerate(sentence_blocks)]
+        # No need to pass sentence index, as it is read from each token line
+        self.sentences = [self._parse_sentence_lines(block) for block in sentence_blocks]
         return self.sentences
 
     def _extract_headers(self, lines: List[str]) -> None:
@@ -52,7 +53,7 @@ class BaseWebAnnoTSVParser(ABC):
             blocks.append(current_block)
         return blocks
 
-    def _parse_sentence_lines(self, sentence_lines: List[str], sentence_index: int) -> AnnotationSentence:
+    def _parse_sentence_lines(self, sentence_lines: List[str]) -> AnnotationSentence:
         sentence_text = sentence_lines[0][6:]  # Remove "#Text="
         token_lines = sentence_lines[1:]
         min_start_index = None
@@ -60,7 +61,7 @@ class BaseWebAnnoTSVParser(ABC):
 
         for token_index, line in enumerate(token_lines, start=1):
             token, min_start_index = self._parse_token_line(
-                line, sentence_index, token_index, min_start_index
+                line, token_index, min_start_index
             )
             tokens.append(token)
 
@@ -69,15 +70,25 @@ class BaseWebAnnoTSVParser(ABC):
     def _parse_token_line(
         self,
         line: str,
-        sentence_index: int,
         token_index: int,
         min_start_index: Optional[int],
     ) -> Tuple[AnnotationToken, int]:
         parts = line.split('\t')
+        if len(parts) < 3:
+            raise ValueError(f"Malformed token line: {line}")
+        # Extract sentence index from the first column (e.g., '1-1')
+        sent_token = parts[0]
+        try:
+            sentence_index = int(sent_token.split('-')[0])
+        except Exception as e:
+            raise ValueError(f"Invalid sentence index in token: {sent_token}") from e
         position = parts[1]
         token_text = parts[2]
 
-        start, end = map(int, position.split("-")) if "-" in position else (int(position), int(position))
+        if '-' in position:
+            start, end = map(int, position.split("-"))
+        else:
+            start = end = int(position)
 
         if min_start_index is None:
             min_start_index = start
