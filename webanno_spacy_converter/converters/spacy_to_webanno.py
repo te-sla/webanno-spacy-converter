@@ -62,7 +62,7 @@ class DocBinToAnnotationSentencesConverter:
                             if (span_start, span_end) in group_ids:
                                 g = group_ids[(span_start, span_end)]
                                 layer_data['value'] = f"{label}[{g}]"
-                                layer_data['identifier'] = f"{kb_id}[{g}]" if kb_id != "*" else kb_id
+                                layer_data['identifier'] = f"{kb_id}[{g}]" 
                             else:
                                 layer_data['value'] = label
                                 layer_data['identifier'] = kb_id
