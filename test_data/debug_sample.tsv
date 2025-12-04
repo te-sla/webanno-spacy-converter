@@ -1,0 +1,20 @@
+#FORMAT=WebAnno TSV 3.3
+#T_SP=de.tudarmstadt.ukp.dkpro.core.api.ner.type.NamedEntity|identifier|value
+
+
+#Text=PISMA SRPSKOGA PUTNIKA Pisma srpskoga putnika .
+1-1	0-5	PISMA	_	_	
+1-2	6-14	SRPSKOGA	*	DEMO	
+1-3	15-22	PUTNIKA	_	_	
+1-4	23-28	Pisma	_	_	
+1-5	29-37	srpskoga	*	DEMO	
+1-6	38-45	putnika	_	_	
+1-7	46-47	.	_	_	
+
+#Text=U Baji , 10. julija .
+2-1	48-49	U	_	_	
+2-2	50-54	Baji	http://www.wikidata.org/entity/Q203344	LOC	
+2-3	55-56	,	_	_	
+2-4	57-60	10.	_	_	
+2-5	61-67	julija	_	_	
+2-6	68-69	.	_	_	

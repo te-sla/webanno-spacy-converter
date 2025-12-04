@@ -1,0 +1,16 @@
+#FORMAT=WebAnno TSV 3.3
+#T_SP=webanno.custom.NER|value|identifier
+
+
+#Text=Hello​​world test.
+1-1	0-5	Hello	_	_
+1-2	5-10	world	_	_
+1-3	11-15	test	_	_
+1-4	15-16	.	_	_
+
+#Text=Te​st with ZWSP inside.
+2-1	0-4	Test	_	_
+2-2	5-9	with	_	_
+2-3	10-14	ZWSP	_	_
+2-4	15-21	inside	_	_
+2-5	21-22	.	_	_

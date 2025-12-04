@@ -1,11 +1,13 @@
+import logging
 from abc import ABC
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, DefaultDict
 from collections import defaultdict
-from typing import DefaultDict
+
 from ..models.annotation_token import AnnotationToken
 from ..models.annotation_sentence import AnnotationSentence
 from webanno_spacy_converter.models.sentence_with_mwes import MultiWordExpression, AnnotatedSentenceWithMWEs
 
+logger = logging.getLogger(__name__)
 
 class BaseWebAnnoTSVParser(ABC):
     def __init__(self, file_path: str):
@@ -15,15 +17,30 @@ class BaseWebAnnoTSVParser(ABC):
         self.sentences: List[AnnotationSentence] = []
 
     def load_lines(self) -> List[str]:
-        with open(self.file_path, 'r', encoding='utf-8') as f:
-            return [line.strip() for line in f if line.strip()]
+        try:
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            logger.error(f"File not found: {self.file_path}")
+            raise
+        except Exception as e:
+            logger.error(f"Error reading file {self.file_path}: {e}")
+            raise
 
     def parse(self) -> List[AnnotationSentence]:
         lines = self.load_lines()
         self._extract_headers(lines)
         sentence_blocks = self._split_sentences(lines)
-        # No need to pass sentence index, as it is read from each token line
-        self.sentences = [self._parse_sentence_lines(block) for block in sentence_blocks]
+        
+        parsed_sentences = []
+        for block in sentence_blocks:
+            try:
+                sent = self._parse_sentence_lines(block)
+                parsed_sentences.append(sent)
+            except Exception as e:
+                logger.warning(f"Skipping malformed sentence block in {self.file_path}: {e}")
+                
+        self.sentences = parsed_sentences
         return self.sentences
 
     def _extract_headers(self, lines: List[str]) -> None:
@@ -54,47 +71,86 @@ class BaseWebAnnoTSVParser(ABC):
         return blocks
 
     def _parse_sentence_lines(self, sentence_lines: List[str]) -> AnnotationSentence:
+        if not sentence_lines:
+            raise ValueError("Empty sentence block")
+            
         sentence_text = sentence_lines[0][6:]  # Remove "#Text="
         token_lines = sentence_lines[1:]
+        
+        # First pass: parse tokens with raw offsets
+        raw_tokens: List[AnnotationToken] = []
         min_start_index = None
-        tokens = []
 
         for token_index, line in enumerate(token_lines, start=1):
-            token, min_start_index = self._parse_token_line(
-                line, token_index, min_start_index
-            )
-            tokens.append(token)
+            token = self._parse_token_line_raw(line, token_index)
+            raw_tokens.append(token)
+            
+            if min_start_index is None or token.start < min_start_index:
+                min_start_index = token.start
 
-        return self._finalize_sentence(sentence_text, tokens)
+        # Second pass: adjust offsets to be relative to sentence_text
+        final_tokens = []
+        shift_amount = 0
+        
+        if raw_tokens and min_start_index is not None:
+            # Try to align first token to sentence text to handle leading whitespace
+            first_token_text = raw_tokens[0].text
+            prefix_pos = sentence_text.find(first_token_text)
+            
+            if prefix_pos != -1:
+                # Found the token in the text. 
+                # The token should start at `prefix_pos` in `sentence_text`.
+                # Currently it starts at `min_start_index` (absolute).
+                # So we want: new_start = (old_start - min_start_index) + prefix_pos
+                shift_amount = prefix_pos
+            else:
+                logger.warning(
+                    f"Could not find first token '{first_token_text}' in sentence text: '{sentence_text[:20]}...'. "
+                    "Alignment might be incorrect."
+                )
+                shift_amount = 0 # Fallback to 0-based from first token
 
-    def _parse_token_line(
+            for token in raw_tokens:
+                # Calculate relative offset from the first token's start
+                rel_start = token.start - min_start_index
+                rel_end = token.end - min_start_index
+                
+                # Apply the shift to align with sentence_text
+                token.start = rel_start + shift_amount
+                token.end = rel_end + shift_amount
+                final_tokens.append(token)
+        else:
+            final_tokens = raw_tokens
+
+        return self._finalize_sentence(sentence_text, final_tokens)
+
+    def _parse_token_line_raw(
         self,
         line: str,
         token_index: int,
-        min_start_index: Optional[int],
-    ) -> Tuple[AnnotationToken, int]:
+    ) -> AnnotationToken:
         parts = line.split('\t')
         if len(parts) < 3:
             raise ValueError(f"Malformed token line: {line}")
+            
         # Extract sentence index from the first column (e.g., '1-1')
         sent_token = parts[0]
         try:
             sentence_index = int(sent_token.split('-')[0])
-        except Exception as e:
-            raise ValueError(f"Invalid sentence index in token: {sent_token}") from e
+        except Exception:
+            # Fallback or error
+            sentence_index = 1
+            
         position = parts[1]
         token_text = parts[2]
 
-        if '-' in position:
-            start, end = map(int, position.split("-"))
-        else:
-            start = end = int(position)
-
-        if min_start_index is None:
-            min_start_index = start
-
-        offset_start = start - min_start_index
-        offset_end = end - min_start_index
+        try:
+            if '-' in position:
+                start, end = map(int, position.split("-"))
+            else:
+                start = end = int(position)
+        except ValueError:
+            raise ValueError(f"Invalid position format '{position}' in line: {line}")
 
         layers = {}
         for i, col in enumerate(parts[3:]):
@@ -102,16 +158,15 @@ class BaseWebAnnoTSVParser(ABC):
                 layer_name = self.layer_names.get(i, f"layer{i}")
                 layers[layer_name] = col
         
-        token = AnnotationToken(
+        # Return token with RAW offsets (absolute)
+        return AnnotationToken(
             sentence_index=sentence_index,
             token_index=token_index,
             text=token_text,
-            start=offset_start,
-            end=offset_end,
+            start=start,
+            end=end,
             layers=layers
         )
-
-        return token, min_start_index
 
     def _finalize_sentence(self, sentence_text: str, tokens: List[AnnotationToken]) -> AnnotationSentence:
         return AnnotationSentence(
@@ -119,6 +174,7 @@ class BaseWebAnnoTSVParser(ABC):
             tokens=tokens,
             entities=[],
         )
+
 
 class WebAnnoNELParser(BaseWebAnnoTSVParser):
     def _finalize_sentence(self, sentence_text: str, tokens: List[AnnotationToken]) -> AnnotationSentence:
