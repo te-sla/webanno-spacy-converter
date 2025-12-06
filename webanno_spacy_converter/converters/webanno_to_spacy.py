@@ -166,15 +166,9 @@ class AnnotationSentencesToDocBinConverter:
                         # No gap
                         spaces.append(False)
                 else:
-                    # Last token - add trailing newline for sentence separation
-                    # This ensures Doc.from_docs() preserves newlines between sentences
-                    spaces.append(False)
-                    
-                    # Add trailing newline token
-                    words.append("\n")
-                    spaces.append(False)
-                    tags.append("_SP")
-                    lemmas.append("\n")
+                    # Last token - use space for sentence separation (not newline)
+                    # Using newline causes overfitting on sentence boundaries
+                    spaces.append(True)
                     
         else:
             # Fallback if no text available (unlikely for this use case)
