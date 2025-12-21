@@ -1,7 +1,7 @@
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
-from typing import List
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+from typing import List, Dict, Optional
 import random
 import traceback
 import logging
@@ -140,6 +140,10 @@ class WebAnnoToSpacyGUI:
         # Default layer names for ELEXIS WebAnno TSV
         self.tag_layer = tk.StringVar(value="coarseValue")   # POS
         self.lemma_layer = tk.StringVar(value="value_4")     # lemma
+        
+        # Shuffle options
+        self.shuffle_mode = tk.StringVar(value="chunk")  # "chunk", "sentence", "none"
+        self.random_seed = tk.StringVar(value="")  # empty = random
 
         # Build UI
         self._build_ui()
@@ -219,6 +223,21 @@ class WebAnnoToSpacyGUI:
             row=2, column=1, sticky=tk.W, padx=(0, 8), pady=2
         )
 
+        tk.Label(options_frame, text="Shuffle mode:").grid(row=3, column=0, sticky=tk.W, padx=(4, 4), pady=2)
+        shuffle_combo = ttk.Combobox(
+            options_frame, 
+            textvariable=self.shuffle_mode, 
+            values=["chunk", "sentence", "none"],
+            state="readonly",
+            width=10
+        )
+        shuffle_combo.grid(row=3, column=1, sticky=tk.W, padx=(0, 8), pady=2)
+
+        tk.Label(options_frame, text="Random seed (empty=random):").grid(row=3, column=2, sticky=tk.W, padx=(4, 4), pady=2)
+        tk.Entry(options_frame, textvariable=self.random_seed, width=12).grid(
+            row=3, column=3, sticky=tk.W, padx=(0, 4), pady=2
+        )
+
         # spacer to align grid
         options_frame.grid_columnconfigure(4, weight=1)
 
@@ -273,6 +292,74 @@ class WebAnnoToSpacyGUI:
         else:
             return [p for p in raw.split(";") if p]
 
+    def _create_chunks(
+        self, 
+        sentences_by_file: Dict[str, List], 
+        chunk_size: int
+    ) -> List[List]:
+        """
+        Group sentences into chunks, respecting file boundaries.
+        Each file's sentences are split into chunks of chunk_size.
+        Returns a list of chunks (each chunk is a list of sentences).
+        """
+        chunks = []
+        # Sort files alphabetically for consistent ordering (matters for 'none' mode)
+        for file_path in sorted(sentences_by_file.keys()):
+            file_sents = sentences_by_file[file_path]
+            # Split this file's sentences into chunks
+            for i in range(0, len(file_sents), chunk_size):
+                chunk = file_sents[i:i + chunk_size]
+                chunks.append(chunk)
+        return chunks
+
+    def _prepare_sentences(
+        self,
+        sentences_by_file: Dict[str, List],
+        mode: str,
+        chunk_size: int,
+        seed: Optional[int]
+    ) -> List:
+        """
+        Prepare sentences for train/dev/test split based on shuffle mode.
+        
+        Args:
+            sentences_by_file: Dict mapping file path to list of sentences
+            mode: "chunk" (shuffle chunks, preserve file boundaries), 
+                  "sentence" (shuffle individual sentences),
+                  "none" (preserve original order)
+            chunk_size: Number of sentences per chunk (used for "chunk" mode)
+            seed: Random seed for reproducibility (None = random)
+        
+        Returns:
+            Flattened list of sentences in the appropriate order
+        """
+        # Set seed if provided
+        if seed is not None:
+            random.seed(seed)
+            logger.info(f"Using random seed: {seed}")
+        
+        if mode == "chunk":
+            # Create chunks respecting file boundaries, then shuffle chunks
+            chunks = self._create_chunks(sentences_by_file, chunk_size)
+            random.shuffle(chunks)
+            # Flatten chunks back to sentence list
+            return [sent for chunk in chunks for sent in chunk]
+        
+        elif mode == "sentence":
+            # Flatten all sentences then shuffle individually
+            all_sents = []
+            for file_path in sorted(sentences_by_file.keys()):
+                all_sents.extend(sentences_by_file[file_path])
+            random.shuffle(all_sents)
+            return all_sents
+        
+        else:  # mode == "none"
+            # Preserve order: alphabetical by file, original order within file
+            all_sents = []
+            for file_path in sorted(sentences_by_file.keys()):
+                all_sents.extend(sentences_by_file[file_path])
+            return all_sents
+
     def _run_conversion(self) -> None:
         input_files = self._collect_input_files()
         if not input_files:
@@ -316,35 +403,47 @@ class WebAnnoToSpacyGUI:
             return
 
         try:
-            all_sentences: List = []
-            current_file = ""
+            sentences_by_file: Dict[str, List] = {}
             
             # Parse all files with detailed error tracking
             for path in input_files:
-                current_file = path
                 logger.info(f"Parsing file: {path}")
                 try:
                     parser = WebAnnoNELParser(path)
                     file_sentences = parser.parse()
                     logger.info(f"  Parsed {len(file_sentences)} sentences from {os.path.basename(path)}")
-                    all_sentences.extend(file_sentences)
+                    sentences_by_file[path] = file_sentences
                 except Exception as e:
                     error_msg = f"Error parsing file: {path}\n\nError: {e}\n\n{traceback.format_exc()}"
                     logger.error(error_msg)
                     self._show_error_dialog("Parse Error", error_msg)
                     return
 
-            # Simple split: 80% train, 10% dev, 10% test
-            total = len(all_sentences)
+            # Count total sentences
+            total = sum(len(sents) for sents in sentences_by_file.values())
             if total == 0:
                 messagebox.showerror("Error", "Parsed 0 sentences from input files.")
                 return
 
-            logger.info(f"Total sentences parsed: {total}")
+            logger.info(f"Total sentences parsed: {total} from {len(sentences_by_file)} files")
 
-            # Shuffle sentences before splitting so train/dev/test are mixed
-            random.shuffle(all_sentences)
+            # Get shuffle options
+            shuffle_mode = self.shuffle_mode.get()
+            seed_str = self.random_seed.get().strip()
+            seed = int(seed_str) if seed_str else None
+            
+            # Log shuffle mode for transparency
+            mode_descriptions = {
+                "chunk": "chunk (preserves file boundaries, shuffles document chunks)",
+                "sentence": "sentence (shuffles individual sentences, breaks context)",
+                "none": "none (preserves original order)"
+            }
+            logger.info(f"Using shuffle mode: {mode_descriptions.get(shuffle_mode, shuffle_mode)}")
+            
+            # Prepare sentences based on shuffle mode
+            all_sentences = self._prepare_sentences(sentences_by_file, shuffle_mode, s_per_doc, seed)
 
+            # Simple split: 80% train, 10% dev, 10% test
             train_end = int(total * 0.8)
             dev_end = int(total * 0.9)
 
