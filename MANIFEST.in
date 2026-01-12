@@ -1,0 +1,10 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include webanno_spacy_converter *.py
+recursive-include tests *.py *.tsv
+prune conversion
+prune notebooks
+prune training_test
+prune my_nlp_el_cnn1
+prune configs
