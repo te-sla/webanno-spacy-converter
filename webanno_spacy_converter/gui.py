@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 
 import spacy
+import cyrtranslit
 from spacy.tokens import DocBin
 
 from .parsers.tsv_parser_v3 import WebAnnoNELParser
@@ -144,6 +145,11 @@ class WebAnnoToSpacyGUI:
         # Shuffle options
         self.shuffle_mode = tk.StringVar(value="chunk")  # "chunk", "sentence", "none"
         self.random_seed = tk.StringVar(value="")  # empty = random
+        
+        # Transliteration options
+        # "none" = no change, "to_latin" = Cyrillic→Latin, "to_cyrillic" = Latin→Cyrillic
+        self.transliterate_mode = tk.StringVar(value="none")
+        self.transliterate_lang = tk.StringVar(value="sr")  # Serbian by default
 
         # Build UI
         self._build_ui()
@@ -237,6 +243,27 @@ class WebAnnoToSpacyGUI:
         tk.Entry(options_frame, textvariable=self.random_seed, width=12).grid(
             row=3, column=3, sticky=tk.W, padx=(0, 4), pady=2
         )
+        
+        # Transliteration options (row 4)
+        tk.Label(options_frame, text="Transliteration:").grid(row=4, column=0, sticky=tk.W, padx=(4, 4), pady=2)
+        translit_combo = ttk.Combobox(
+            options_frame,
+            textvariable=self.transliterate_mode,
+            values=["none", "to_latin", "to_cyrillic"],
+            state="readonly",
+            width=12
+        )
+        translit_combo.grid(row=4, column=1, sticky=tk.W, padx=(0, 8), pady=2)
+        
+        tk.Label(options_frame, text="Script language:").grid(row=4, column=2, sticky=tk.W, padx=(4, 4), pady=2)
+        lang_combo = ttk.Combobox(
+            options_frame,
+            textvariable=self.transliterate_lang,
+            values=["sr", "me", "mk", "ru", "bg", "ua", "by"],  # Serbian, Montenegrin, Macedonian, Russian, Bulgarian, Ukrainian, Belarusian
+            state="readonly",
+            width=8
+        )
+        lang_combo.grid(row=4, column=3, sticky=tk.W, padx=(0, 4), pady=2)
 
         # spacer to align grid
         options_frame.grid_columnconfigure(4, weight=1)
@@ -250,6 +277,76 @@ class WebAnnoToSpacyGUI:
     def _show_error_dialog(self, title: str, error_text: str):
         """Show a detailed error dialog with copy and save options."""
         ErrorDialog(self.master, title, error_text)
+
+    def _transliterate_text(self, text: str, mode: str, lang: str) -> str:
+        """
+        Transliterate text between Cyrillic and Latin scripts.
+        
+        Args:
+            text: The text to transliterate
+            mode: "to_latin", "to_cyrillic", or "none"
+            lang: Language code for cyrtranslit (sr, me, mk, ru, bg, ua, by)
+        
+        Returns:
+            Transliterated text, or original text if mode is "none"
+        """
+        if mode == "none" or not text:
+            return text
+        
+        try:
+            if mode == "to_latin":
+                return cyrtranslit.to_latin(text, lang)
+            elif mode == "to_cyrillic":
+                return cyrtranslit.to_cyrillic(text, lang)
+        except Exception as e:
+            logger.warning(f"Transliteration failed for '{text[:50]}...': {e}")
+        
+        return text
+    
+    def _transliterate_sentence(self, sentence, mode: str, lang: str, lemma_layer: Optional[str]):
+        """
+        Transliterate all text content in an AnnotationSentence.
+        
+        This transliterates:
+        - sentence.text (the raw text)
+        - token.text (each token's text)
+        - token.layers[lemma_layer] (lemmas are actual words, need transliteration)
+        
+        This does NOT transliterate (they are codes, not text):
+        - POS tags (like "NOUN", "VERB")
+        - Entity labels (like "PER", "LOC")
+        - Entity QIDs (like "Q12345")
+        - Dependency labels
+        - Any other code-like annotations
+        
+        Args:
+            sentence: AnnotationSentence object to transliterate (modified in place)
+            mode: "to_latin", "to_cyrillic", or "none"
+            lang: Language code for cyrtranslit
+            lemma_layer: Name of the lemma layer to transliterate (if any)
+        """
+        if mode == "none":
+            return
+        
+        # Transliterate the sentence text
+        if sentence.text:
+            sentence.text = self._transliterate_text(sentence.text, mode, lang)
+        
+        # Transliterate each token's text and lemma (but NOT POS or other codes)
+        for token in sentence.tokens:
+            # Transliterate token text
+            if token.text:
+                token.text = self._transliterate_text(token.text, mode, lang)
+            
+            # Transliterate lemma if lemma_layer is specified and exists
+            if lemma_layer and lemma_layer in token.layers:
+                lemma = token.layers[lemma_layer]
+                if lemma and lemma != "_":
+                    token.layers[lemma_layer] = self._transliterate_text(lemma, mode, lang)
+        
+        # Note: Entity character offsets will still be valid because we transliterate
+        # the sentence.text as well, so the character positions remain aligned.
+        # Entity labels and QIDs are NOT transliterated (they are codes, not text).
 
     def _update_input_controls(self) -> None:
         # Currently nothing dynamic beyond browse behavior, but hook kept for future
@@ -426,6 +523,17 @@ class WebAnnoToSpacyGUI:
                 return
 
             logger.info(f"Total sentences parsed: {total} from {len(sentences_by_file)} files")
+
+            # Apply transliteration if enabled
+            translit_mode = self.transliterate_mode.get()
+            translit_lang = self.transliterate_lang.get()
+            
+            if translit_mode != "none":
+                logger.info(f"Applying transliteration: {translit_mode} (language: {translit_lang})")
+                for file_path, file_sents in sentences_by_file.items():
+                    for sent in file_sents:
+                        self._transliterate_sentence(sent, translit_mode, translit_lang, lemma_layer)
+                logger.info(f"Transliteration complete. Mode: {translit_mode}")
 
             # Get shuffle options
             shuffle_mode = self.shuffle_mode.get()
